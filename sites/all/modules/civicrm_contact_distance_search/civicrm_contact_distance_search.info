@@ -1,0 +1,14 @@
+name = CiviCRM Contact Distance Search
+description = This module provides facility to search nearest civicrm contacts using postcode.
+package = CiviCRM
+core = "7.x"
+configure = admin/config/development/google_api_key
+dependencies[] = views
+dependencies[] = civicrm
+
+; Information added by Drupal.org packaging script on 2016-05-31
+version = "7.x-1.0"
+core = "7.x"
+project = "civicrm_contact_distance_search"
+datestamp = "1464686340"
+

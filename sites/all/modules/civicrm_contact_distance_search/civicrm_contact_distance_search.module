@@ -1,0 +1,185 @@
+<?php
+/**
+ * @file
+ * This module gives civicrm contact search facility by distance.
+ */
+
+define('CIVICRM_CONTACT_DISTANCE_SEARCH_DEFAULT_CONTACT_MILES', 2500);
+module_load_include('inc', 'civicrm_contact_distance_search', 'includes/civicrm_contact_distance_search');
+module_load_include('inc', 'civicrm_contact_distance_search', 'includes/civicrm_contact_distance_search_admin_form');
+module_load_include('inc', 'civicrm_contact_distance_search', 'view/civicrm_contact_distance_search.views_default');
+
+/**
+ * Implements hook_views_pre_render().
+ */
+function civicrm_contact_distance_search_views_pre_render(&$view) {
+  if ($view->name == 'civicrm_contact_distance_search') {
+    $googleapikey = variable_get("civicrm_contact_distance_search_googleapi");
+    $url_geo = "https://maps.google.com/maps/api/js?sensor=false";
+    if (!empty($googleapikey)) {
+      $url_geo .= "&key=" . $googleapikey;
+    }
+    drupal_add_js($url_geo, 'external');
+    drupal_add_js(drupal_get_path('module', 'civicrm_contact_distance_search') . '/js/civicrm_contact_distance_search.js');
+    drupal_add_css(drupal_get_path('module', 'civicrm_contact_distance_search') . '/css/civicrm_contact_distance_search.css');
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function civicrm_contact_distance_search_menu() {
+  $items = array();
+  $items['admin/config/development/google_api_key'] = array(
+    'title' => 'Civicrm contact distance search settings',
+    'description' => 'Configure Google API Key to Civicrm contact distance search module  ',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array(
+      'civicrm_contact_distance_search_admin',
+    ),
+    'access arguments' => array(
+      'administer civicrm_contact_distance_search settings',
+    ),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function civicrm_contact_distance_search_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'civicrm_contact_distance_search'),
+  );
+}
+
+
+/**
+ * Implements hook_form_alter().
+ */
+function civicrm_contact_distance_search_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'views_exposed_form' && $form_state['view']->name == 'civicrm_contact_distance_search' && $form_state['view']->current_display == 'page') {
+    $form['postcode_from'] = array(
+      '#type' => 'textfield',
+      '#size' => '12',
+      '#weight' => '0',
+      // '#required' => TRUE,
+      '#title' => t('Postcode From'),
+      '#prefix' => '<div style="float:left;padding-right:15px">',
+      '#suffix' => '</div>',
+    );
+
+    $form['from_miles'] = array(
+      '#type' => 'textfield',
+      '#size' => '12',
+      '#weight' => '1',
+      '#title' => t('Miles To'),
+      '#prefix' => '<div style="float:left;padding-right:15px">',
+      '#suffix' => '</div>',
+    );
+    /* Find Nearest postcode button */
+    /* Button hidden at the moment */
+    $form['postcode_from']['#suffix'] = "<div id='mtl-find-location' style='cursor:pointer;display:inline;float:left;padding:25px 25px 0 5px;'><img alt='Find nearest postcode' title='Find nearest postcode' src='" . drupal_get_path('module', 'civicrm_contact_distance_search') . "/images/location.png' /></div>";
+
+    $form['submit']['#prefix'] = '<div style="float:left;">';
+    $form['submit']['#suffix'] = '</div>';
+
+    $form['submit']['#weight'] = '100';
+    $form['geo_code_1']['#type'] = 'hidden';
+    $form['submit']['#validate'][] = 'civicrm_contact_distance_search_form_validate';
+  }
+}
+
+/**
+ * Implements hook_views_query_alter().
+ */
+function civicrm_contact_distance_search_views_query_alter(&$view, &$query) {
+  if ($view->name == "civicrm_contact_distance_search") {
+    if (isset($view->exposed_input['postcode_from'])) {
+      $postcode = $view->exposed_input['postcode_from'];
+      $milesto = $view->exposed_input['from_miles'];
+      // Sanitize their postcode:
+      $search_code = urlencode($postcode);
+      $url = 'https://maps.googleapis.com/maps/api/geocode/json?address=' . $search_code . '&sensor=false';
+      $googleapikey = variable_get("civicrm_contact_distance_search_googleapi");
+      if (!empty($googleapikey)) {
+        $url .= '&key=' . $googleapikey;
+      }
+      $json = json_decode(file_get_contents($url));
+    }
+    $lat = $lng = '';
+    if (isset($json->results[0]->geometry)) {
+      $lat = $json->results[0]->geometry->location->lat;
+      $lng = $json->results[0]->geometry->location->lng;
+    }
+
+    if ($lat != '' && $lng != '') {
+      $join = new views_join();
+      $join->table = 'civicrm_address';
+      $join->field = 'contact_id';
+      $join->left_table = 'civicrm_contact';
+      $join->left_field = 'id';
+      $join->type = 'LEFT';
+      $query->add_relationship('civicrm_address', $join, 'civicrm_contact');
+
+      // Add the Distance field.
+      $query->add_field(NULL, '(3959 * acos(cos(radians(' . $lat . ')) * cos(radians(civicrm_address.geo_code_1)) * cos(radians(civicrm_address.geo_code_2) - radians(' . $lng . ')) + sin(radians(' . $lat . ')) * sin(radians(civicrm_address.geo_code_1)))) ', 'distance');
+
+      // Add the WHERE condition.
+      if ($milesto != '') {
+        $query->add_where_expression(0, '(( 3959 * acos(cos( radians(' . $lat . ') ) * cos( radians( civicrm_address.geo_code_1 ) ) * cos( radians( civicrm_address.geo_code_2 ) - radians(' . $lng . ') ) + sin( radians(' . $lat . ') ) * sin( radians( civicrm_address.geo_code_1 ) ) ) )  <= ' . $milesto . ')');
+      }
+      else {
+        $query->add_where_expression(0, '(( 3959 * acos( cos( radians(' . $lat . ') ) * cos( radians( civicrm_address.geo_code_1 ) ) * cos( radians( civicrm_address.geo_code_2 ) - radians(' . $lng . ') ) + sin( radians(' . $lat . ') ) * sin( radians( civicrm_address.geo_code_1 ) ) ) )  <= ' . CIVICRM_CONTACT_DISTANCE_SEARCH_DEFAULT_CONTACT_MILES . ')');
+      }
+      $query->add_where_expression(1, 'civicrm_address.is_primary = 1');
+      $view->query->orderby[0]['field'] = "distance";
+      $view->query->orderby[0]['direction'] = "ASC";
+    }
+  }
+
+  $query->add_groupby('civicrm_contact.id');
+}
+
+/**
+ * Implements hook_preprocess_views_view_fields().
+ */
+function civicrm_contact_distance_search_preprocess_views_view_fields(&$vars) {
+  $view = $vars['view'];
+  if ($view->name == 'civicrm_contact_distance_search') {
+    if (isset($vars['row']->distance)) {
+      if (round($vars['row']->distance, 2) != 0) {
+        $vars['fields']['nothing']->content = "Distance in miles : <b>" . round($vars['row']->distance, 2) . "</b>";
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_modules_installed().
+ */
+function civicrm_contact_distance_search_modules_installed($modules) {
+  if (in_array('civicrm_contact_distance_search', $modules)) {
+    drupal_flush_all_caches();
+  }
+}
+
+/**
+ * Implements hook_form_validate().
+ */
+function civicrm_contact_distance_search_form_validate($form, &$form_state) {
+  if ($form['#id'] == 'views-exposed-form-civicrm-contact-distance-search-page') {
+    $postcode = $form_state['values']['postcode_from'];
+    $miles_from = $form_state['values']['from_miles'];
+    if (!($miles_from == '' && $postcode == '')) {
+      if ($postcode != '' && civicrm_contact_distance_search_ispostcode($postcode) == FALSE) {
+        form_set_error('postcode_from', t('Please Enter valid postcode.'));
+      }
+      if ($miles_from != '' && !is_numeric($miles_from)) {
+        form_set_error('from_miles', t('Please Enter valid number.'));
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+<?php
+/**
+ * @file
+ * Module install file.
+ */
+
+/**
+ * Hook of hook_uninstall.
+ */
+function civicrm_contact_distance_search_uninstall() {
+  variable_del('civicrm_contact_distance_search_googleapi');
+}
